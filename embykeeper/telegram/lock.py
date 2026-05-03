@@ -19,3 +19,4 @@ super_ad_shown_lock = asyncio.Lock()
 
 authed_services = {}  # uid: {service: bool}
 authed_services_lock = asyncio.Lock()
+fallback_services = {}  # uid: {service: bool}

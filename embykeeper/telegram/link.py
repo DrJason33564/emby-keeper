@@ -18,7 +18,13 @@ from pyrogram.errors import FloodWait
 
 from embykeeper.utils import async_partial, truncate_str
 
-from .lock import super_ad_shown, super_ad_shown_lock, authed_services, authed_services_lock
+from .lock import (
+    super_ad_shown,
+    super_ad_shown_lock,
+    authed_services,
+    authed_services_lock,
+    fallback_services,
+)
 from .pyrogram import Client
 
 
@@ -253,8 +259,10 @@ class Link:
                         f"{service.upper()} 认证失败, 已启用 OpenAI 兼容后备模型通道并继续执行."
                     )
                     authed_services.setdefault(self.client.me.id, {})[service] = True
+                    fallback_services.setdefault(self.client.me.id, {})[service] = True
                     return True
                 authed_services.setdefault(self.client.me.id, {})[service] = bool(result)
+                fallback_services.setdefault(self.client.me.id, {})[service] = False
                 return bool(result)
             else:
                 try:
@@ -270,14 +278,17 @@ class Link:
                             f"{service.upper()} 认证失败, 已切换为 OpenAI 兼容后备模型方案继续执行."
                         )
                         authed_services.setdefault(self.client.me.id, {})[service] = True
+                        fallback_services.setdefault(self.client.me.id, {})[service] = True
                         return True
                     log_func(f"初始化错误: 使用 {service.upper()} 服务, 但{e}")
                     if "权限不足" in str(e):
                         await self._show_super_ad()
                     authed_services.setdefault(self.client.me.id, {})[service] = False
+                    fallback_services.setdefault(self.client.me.id, {})[service] = False
                     return False
                 else:
                     authed_services.setdefault(self.client.me.id, {})[service] = True
+                    fallback_services.setdefault(self.client.me.id, {})[service] = False
                     return True
 
     async def _show_super_ad(self):
@@ -369,24 +380,30 @@ class Link:
         cmd = f"/visual {self.instance} {'/'.join(options)}"
         if question:
             cmd += f" {question}"
-        results = await self.post(cmd, photo=photo, timeout=30, name="请求视觉问题解答")
-        if results:
-            return results.get("answer", None), results.get("by", None)
+        use_fallback_only = fallback_services.get(self.client.me.id, {}).get("visual", False)
+        if not use_fallback_only:
+            results = await self.post(cmd, photo=photo, timeout=30, name="请求视觉问题解答")
+            if results:
+                return results.get("answer", None), results.get("by", None)
         prompt = (
             f"请从以下候选项中选择最匹配的一项并只输出该项原文: {', '.join(options)}."
             + (f"\n附加问题: {question}" if question else "")
         )
-        return await self._openai_chat(
+        answer, by = await self._openai_chat(
             messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, await self._to_image_content(photo)]}],
             model=os.getenv("EK_OPENAI_VISION_MODEL"),
         )
+        return self._parse_ai_action_answer(answer), by
 
-    async def ocr(self, photo) -> Optional[str]:
+    async def ocr(self, photo, options: Optional[List[str]] = None) -> Optional[str]:
         """向机器人发送 OCR 解答请求."""
         cmd = f"/ocr {self.instance}"
         results = await self.post(cmd, photo=photo, timeout=20, name="请求验证码解答")
         if results:
             return results.get("answer", None)
+        options = options or []
+        options_text = ", ".join(options) if options else "无可用选项"
+        image_desc = "消息附带图片(图片内容已作为 image_url 一并提供)"
         answer, _ = await self._openai_chat(
             messages=[
                 {
@@ -394,10 +411,10 @@ class Link:
                     "content": [
                         {
                             "type": "text",
-                            "text": (
-                                "我正在进行签到, 机器将显示指令或状态, 我需要通过回答问题以避免被识别为机器人或自动化程序, "
-                                "并希望完成签到, 现在机器给出的值为:(附带图片)\n"
-                                "你可选: (无附带选项) 中的一个作为回答\n"
+                                "text": (
+                                    "我正在进行签到, 机器将显示指令或状态, 我需要通过回答问题以避免被识别为机器人或自动化程序, "
+                                    f"并希望完成签到, 现在机器给出的值为: {image_desc}\n"
+                                    f"你可选: {options_text} 中的一个作为回答\n"
                                 "形式为: [CLICK]^XXX^, 其中XXX为回答\n"
                                 "如果您认为不应该进行任何操作, 请输出 [NO_RESP], 禁止输出其他内容\n"
                                 "如果这是一个指令, 请输出您需要发送或点击的内容\n"
@@ -413,6 +430,17 @@ class Link:
             model=os.getenv("EK_OPENAI_VISION_MODEL"),
         )
         return answer
+
+    def _parse_ai_action_answer(self, answer: Optional[str]) -> Optional[str]:
+        if not answer:
+            return answer
+        click = re.search(r"\[CLICK\]\^(.+?)\^", answer)
+        if click:
+            return click.group(1).strip()
+        send = re.search(r"\[SEND\]\^(.+?)\^", answer)
+        if send:
+            return send.group(1).strip()
+        return answer.strip()
 
     async def send_log(self, message):
         """向机器人发送日志记录请求."""

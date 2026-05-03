@@ -39,8 +39,9 @@ class CCCheckin(BotCheckin):
         """分析分析传入的验证码图片并返回验证码."""
         if not message.reply_markup:
             return
+        options = [k.text for r in message.reply_markup.inline_keyboard for k in r]
         for i in range(3):
-            result: str = await Link(self.client).ocr(message.photo.file_id)
+            result: str = await Link(self.client).ocr(message.photo.file_id, options=options)
             if result:
                 self.log.debug(f"远端已解析答案: {result}.")
                 break
@@ -49,7 +50,6 @@ class CCCheckin(BotCheckin):
         else:
             self.log.warning(f"签到失败: 验证码识别错误.")
             return await self.fail()
-        options = [k.text for r in message.reply_markup.inline_keyboard for k in r]
         result = result.translate(str.maketrans("", "", string.punctuation)).replace(" ", "")
         captcha, score = process.extractOne(result, options)
         if score < 50:
