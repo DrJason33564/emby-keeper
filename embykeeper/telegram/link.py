@@ -410,7 +410,7 @@ class Link:
                     ],
                 }
             ],
-            model=os.getenv("EK_OPENAI_MODEL"),
+            model=os.getenv("EK_OPENAI_VISION_MODEL"),
         )
         return answer
 
