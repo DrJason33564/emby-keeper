@@ -172,26 +172,20 @@ class ClientsSession:
             return False
 
     async def test_time(self):
-        url = "https://ip.ddnspod.com/timestamp"
-        proxy_str = get_proxy_str(self.proxy)
+        """检查本地系统时间是否可用 (不再依赖外部 HTTP 时间接口)."""
         try:
-            async with httpx.AsyncClient(http2=True, proxy=proxy_str) as client:
-                resp = await client.get(url)
-                if resp.status_code == 200:
-                    timestamp = int(resp.content.decode())
-                else:
-                    logger.warning(f"世界时间接口异常, 系统时间检测将跳过, 敬请注意. 程序将继续运行.")
-                    return False
-                nowtime = datetime.now(timezone.utc).timestamp()
-                if abs(nowtime - timestamp / 1000) > 30:
-                    logger.warning(
-                        f"您的系统时间设置不正确, 与世界时间差距过大, 可能会导致连接失败, 敬请注意. 程序将继续运行."
-                    )
-        except httpx.HTTPError:
-            logger.warning(f"检测世界时间发生错误, 时间检测将被跳过.")
-            return False
+            now_utc = datetime.now(timezone.utc)
+            now_local = datetime.now().astimezone()
+
+            # 仅检查本地时钟基础可用性: 时间戳应可转换且时区信息存在
+            _ = now_utc.timestamp()
+            _ = now_local.timestamp()
+            if now_local.tzinfo is None:
+                logger.warning("检测本地时间时未获取到时区信息, 可能会导致定时任务异常, 程序将继续运行.")
+                return False
+            return True
         except Exception as e:
-            logger.warning(f"检测世界时间发生错误, 时间检测将被跳过.")
+            logger.warning("检测本地时间发生错误, 时间检测将被跳过.")
             show_exception(e)
             return False
 
