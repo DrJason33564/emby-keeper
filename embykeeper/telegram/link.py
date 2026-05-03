@@ -230,7 +230,13 @@ class Link:
     async def auth(self, service: str, log_func=None):
         """向机器人发送授权请求."""
         def allow_fallback_auth() -> bool:
-            return service == "checkiner" and self._openai_enabled()
+            if not self._openai_enabled():
+                return False
+            if service == "checkiner":
+                return bool(os.getenv("EK_OPENAI_MODEL"))
+            if service == "visual":
+                return bool(os.getenv("EK_OPENAI_VISION_MODEL"))
+            return False
 
         async with authed_services_lock:
             user_auth_cache = authed_services.get(self.client.me.id, {}).get(service, None)
@@ -363,7 +369,7 @@ class Link:
         cmd = f"/visual {self.instance} {'/'.join(options)}"
         if question:
             cmd += f" {question}"
-        results = await self.post(cmd, photo=photo, timeout=20, name="请求视觉问题解答")
+        results = await self.post(cmd, photo=photo, timeout=30, name="请求视觉问题解答")
         if results:
             return results.get("answer", None), results.get("by", None)
         prompt = (
@@ -372,7 +378,7 @@ class Link:
         )
         return await self._openai_chat(
             messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, await self._to_image_content(photo)]}],
-            model=os.getenv("EK_OPENAI_VISION_MODEL") or os.getenv("EK_OPENAI_MODEL"),
+            model=os.getenv("EK_OPENAI_VISION_MODEL"),
         )
 
     async def ocr(self, photo) -> Optional[str]:
@@ -404,7 +410,7 @@ class Link:
                     ],
                 }
             ],
-            model=os.getenv("EK_OPENAI_VISION_MODEL") or os.getenv("EK_OPENAI_MODEL"),
+            model=os.getenv("EK_OPENAI_MODEL"),
         )
         return answer
 
