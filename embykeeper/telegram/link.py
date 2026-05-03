@@ -229,6 +229,9 @@ class Link:
 
     async def auth(self, service: str, log_func=None):
         """向机器人发送授权请求."""
+        def allow_fallback_auth() -> bool:
+            return service == "checkiner" and self._openai_enabled()
+
         async with authed_services_lock:
             user_auth_cache = authed_services.get(self.client.me.id, {}).get(service, None)
             if user_auth_cache is not None:
@@ -237,8 +240,14 @@ class Link:
             # No cache, perform auth
             if not log_func:
                 result = await self.post(
-                    f"/auth {service} {self.instance}", name=f"服务 {service.upper()} 认证"
+                    f"/auth {service} {self.instance}", name=f"服务 {service.upper()} 认证", timeout=30
                 )
+                if not result and allow_fallback_auth():
+                    self.log.warning(
+                        f"{service.upper()} 认证失败, 已启用 OpenAI 兼容后备模型通道并继续执行."
+                    )
+                    authed_services.setdefault(self.client.me.id, {})[service] = True
+                    return True
                 authed_services.setdefault(self.client.me.id, {})[service] = bool(result)
                 return bool(result)
             else:
@@ -246,9 +255,16 @@ class Link:
                     await self.post(
                         f"/auth {service} {self.instance}",
                         name=f"服务 {service.upper()} 认证",
+                        timeout=30,
                         fail=True,
                     )
                 except LinkError as e:
+                    if allow_fallback_auth():
+                        log_func(
+                            f"{service.upper()} 认证失败, 已切换为 OpenAI 兼容后备模型方案继续执行."
+                        )
+                        authed_services.setdefault(self.client.me.id, {})[service] = True
+                        return True
                     log_func(f"初始化错误: 使用 {service.upper()} 服务, 但{e}")
                     if "权限不足" in str(e):
                         await self._show_super_ad()
