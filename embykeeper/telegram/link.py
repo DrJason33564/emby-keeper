@@ -2,6 +2,7 @@ import asyncio
 import random
 import os
 import base64
+import re
 from typing import Callable, Coroutine, List, Optional, Tuple, Union
 import uuid
 from io import BytesIO
