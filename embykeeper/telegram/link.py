@@ -1,9 +1,12 @@
 import asyncio
 import random
+import os
+import base64
 from typing import Callable, Coroutine, List, Optional, Tuple, Union
 import uuid
 from io import BytesIO
 
+import httpx
 import tomli
 from loguru import logger
 from pyrogram import filters
@@ -334,8 +337,10 @@ class Link:
         results = await self.post(f"/gpt {self.instance} {prompt}", timeout=40, name="请求智能回答")
         if results:
             return results.get("answer", None), results.get("by", None)
-        else:
-            return None, None
+        return await self._openai_chat(
+            messages=[{"role": "user", "content": prompt}],
+            model=os.getenv("EK_OPENAI_MODEL"),
+        )
 
     async def visual(self, photo, options: List[str], question=None) -> Tuple[Optional[str], Optional[str]]:
         """向机器人发送视觉问题解答请求."""
@@ -345,8 +350,14 @@ class Link:
         results = await self.post(cmd, photo=photo, timeout=20, name="请求视觉问题解答")
         if results:
             return results.get("answer", None), results.get("by", None)
-        else:
-            return None, None
+        prompt = (
+            f"请从以下候选项中选择最匹配的一项并只输出该项原文: {', '.join(options)}."
+            + (f"\n附加问题: {question}" if question else "")
+        )
+        return await self._openai_chat(
+            messages=[{"role": "user", "content": [{"type": "text", "text": prompt}, await self._to_image_content(photo)]}],
+            model=os.getenv("EK_OPENAI_VISION_MODEL") or os.getenv("EK_OPENAI_MODEL"),
+        )
 
     async def ocr(self, photo) -> Optional[str]:
         """向机器人发送 OCR 解答请求."""
@@ -354,8 +365,32 @@ class Link:
         results = await self.post(cmd, photo=photo, timeout=20, name="请求验证码解答")
         if results:
             return results.get("answer", None)
-        else:
-            return None
+        answer, _ = await self._openai_chat(
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": (
+                                "我正在进行签到, 机器将显示指令或状态, 我需要通过回答问题以避免被识别为机器人或自动化程序, "
+                                "并希望完成签到, 现在机器给出的值为:(附带图片)\n"
+                                "你可选: (无附带选项) 中的一个作为回答\n"
+                                "形式为: [CLICK]^XXX^, 其中XXX为回答\n"
+                                "如果您认为不应该进行任何操作, 请输出 [NO_RESP], 禁止输出其他内容\n"
+                                "如果这是一个指令, 请输出您需要发送或点击的内容\n"
+                                "形式为: [SEND]^XXX^, 其中XXX为内容\n"
+                                "不要说明这是一个指令, 不要说明需要发送文本消息, 仅仅按上述形式输出\n"
+                                "如果这是一个状态, 请输出 [IS_STATUS], 禁止输出其他内容."
+                            ),
+                        },
+                        await self._to_image_content(photo),
+                    ],
+                }
+            ],
+            model=os.getenv("EK_OPENAI_VISION_MODEL") or os.getenv("EK_OPENAI_MODEL"),
+        )
+        return answer
 
     async def send_log(self, message):
         """向机器人发送日志记录请求."""
@@ -379,3 +414,50 @@ class Link:
             return results.get("answer", None), results.get("by", None)
         else:
             return None, None
+
+    def _openai_enabled(self) -> bool:
+        return bool(os.getenv("EK_OPENAI_BASE_URL") and os.getenv("EK_OPENAI_API_KEY"))
+
+    async def _to_image_content(self, photo: str):
+        raw = await self._photo_to_base64(photo)
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{raw}"},
+        }
+
+    async def _photo_to_base64(self, photo: str) -> str:
+        if isinstance(photo, str) and len(photo) > 200 and not photo.startswith(("http://", "https://")):
+            return photo
+        bio = await self.client.download_media(photo, in_memory=True)
+        return base64.b64encode(bio.getvalue()).decode("utf-8")
+
+    async def _openai_chat(self, messages, model: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        if not self._openai_enabled():
+            return None, None
+
+        base_url = os.getenv("EK_OPENAI_BASE_URL", "").rstrip("/")
+        api_key = os.getenv("EK_OPENAI_API_KEY", "")
+        model = model or "gpt-4o-mini"
+
+        if not base_url:
+            return None, None
+
+        endpoint = f"{base_url}/chat/completions"
+        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+        payload = {"model": model, "messages": messages, "temperature": 0}
+
+        try:
+            async with httpx.AsyncClient(timeout=40) as http:
+                resp = await http.post(endpoint, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+                answer = data["choices"][0]["message"]["content"]
+                if isinstance(answer, list):
+                    answer = "".join([p.get("text", "") for p in answer if isinstance(p, dict)])
+                answer = (answer or "").strip()
+                if answer:
+                    self.log.info(f"服务请求完成: OpenAI兼容接口 ({model})")
+                    return answer, f"openai-compatible:{model}"
+        except Exception as e:
+            self.log.debug(f"[gray50]OpenAI兼容接口调用失败: {e}[/]")
+        return None, None
